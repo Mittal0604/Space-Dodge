@@ -12,29 +12,6 @@
 ║   🖐 OPEN PALM  →  Move RIGHT                           ║
 ║   ✌ PEACE/V     →  OVERDRIVE (speed up + shoot fast)    ║
 ╚══════════════════════════════════════════════════════════╝
-
-FIXES APPLIED:
-  1. BUG  – Asteroid.update() used undefined name 'GW'; corrected to 'GAME_W'.
-  2. BUG  – Wrong MediaPipe import paths for draw_landmarks / HandLandmarksConnections;
-             replaced with the correct mediapipe.solutions.hands drawing helpers.
-  3. BUG  – Type-hint 'np.ndarray | None' requires Python 3.10+; changed to
-             'Optional[np.ndarray]' so the code runs on Python 3.8/3.9 as well.
-  4. BUG  – Level-up logic: 'prev_level = level' was re-assigned every frame
-             *before* the threshold check, so the level-up SFX / particles fired
-             continuously once the score exceeded the threshold.  Fixed by tracking
-             the level from the *previous* frame correctly.
-
-OPTIMISATIONS APPLIED:
-  5. PERF – All '[list.append(…) for _ in range(n)]' anti-patterns (builds a
-             throw-away list on the heap) replaced with
-             'list.extend(… for _ in range(n))' – avoids the temporary list alloc.
-  6. PERF – Vignette mask pre-computed once at startup; was rebuilt every frame.
-  7. PERF – Scanline index array pre-computed once at startup; was rebuilt every frame.
-  8. PERF – Removed redundant per-frame np.empty_like allocation in _get_overlay
-             (helper was unused; draw_rounded_rect already uses a local sub-view).
-  9. PERF – cap for dead particles raised to 100 (was 80) but slicing now avoids
-             a full list copy: use a deque with maxlen instead for O(1) appends.
- 10. CLEAN – Removed the now-unused _get_overlay() helper function.
 """
 
 import os
@@ -356,7 +333,7 @@ FONT    = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SM = cv2.FONT_HERSHEY_DUPLEX
 
 COL = {
-    'bg':       (15,  10,  10),
+    'bg':       (12,   8,  20),
     'ship':     (255, 255, 255),
     'engine':   (255, 100,  50),
     'asteroid': (100, 100, 110),
@@ -365,19 +342,21 @@ COL = {
     'bullet':   (255, 255,   0),
     'hit':      (50,  50, 255),
     'boost':    (0,  180, 255),
-    'ui':       (240, 240, 240),
+    'ui':       (230, 220, 200),
     'white':    (255, 255, 255),
-    'dimwhite': (160, 160, 160),
-    'panel':    (35,  30,  30),
-    'accent':   (255, 220,   0),
-    'hp_full':  (100, 255, 150),
-    'hp_low':   (80,  80,  255),
-    'xp':       (255, 150,   0),
+    'dimwhite': (170, 160, 140),
+    'panel':    (25,  18,  35),
+    'accent':   (255, 210,  60),
+    'hp_full':  (50, 220,  80),
+    'hp_low':   (60,  50, 220),
+    'xp':       (80, 200, 255),
     'energy':   (200, 255,   0),
     'crit':     (0,  120, 255),
-    'border':   (80,  70,  70),
-    'dark':     (10,   8,   8),
-    'grid':     (40,  30,  30),
+    'border':   (120, 100,  60),
+    'dark':     (15,  10,  22),
+    'gold':     (50, 215, 255),
+    'rpg_border': (80, 140, 180),
+    'rpg_inner':  (40,  60,  90),
 }
 
 
@@ -397,8 +376,7 @@ for _i in range(30):
     _vignette_mask[:,     -1 - _i] *= _alpha
 _vignette_mask_3d = _vignette_mask[:, :, np.newaxis]  # broadcast-ready
 
-# Scanline row indices – built once
-_scanline_rows = np.arange(0, GAME_H, 3)
+# (scanline rows removed — not used in pixel art mode)
 
 
 # ──────────────────────────────────────────────────────────
@@ -441,26 +419,39 @@ BG_STARS = [
     for _ in range(120)
 ]
 
+
+def draw_rpg_border(surf, x1, y1, x2, y2, title=None):
+    """Draw a classic RPG double-border window."""
+    # Outer border
+    cv2.rectangle(surf, (x1, y1), (x2, y2), COL['rpg_border'], 2)
+    # Inner border
+    cv2.rectangle(surf, (x1+3, y1+3), (x2-3, y2-3), COL['rpg_inner'], 1)
+    # Corner ornaments
+    for cx, cy in [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]:
+        cv2.rectangle(surf, (cx-2, cy-2), (cx+2, cy+2), COL['accent'], -1)
+    # Title tab
+    if title:
+        tw = len(title) * 8 + 12
+        tx = x1 + 10
+        draw_rounded_rect(surf, tx, y1-8, tx+tw, y1+8, COL['dark'], 0.9)
+        cv2.rectangle(surf, (tx, y1-8), (tx+tw, y1+8), COL['rpg_border'], 1)
+        txt(surf, title, tx+6, y1+5, 0.38, COL['accent'])
+
+
 def draw_background(surf, frame_n):
     surf[:] = COL['bg']
 
-    # Perspective grid
-    for i in range(-5, 15):
-        y = int((i * 60 + (frame_n * 2) % 60))
-        if 0 <= y < GAME_H:
-            cv2.line(surf, (0, y), (GAME_W, y), COL['grid'], 1)
-    for i in range(0, GAME_W + 100, 100):
-        cv2.line(surf, (i, 0), (i, GAME_H), COL['grid'], 1)
-
-    # Stars
+    # Twinkling stars
     for sx, sy, brightness, scroll_speed in BG_STARS[::2]:
         sy_s = int((sy + frame_n * scroll_speed) % GAME_H)
         b    = int(brightness * 180)
+        twinkle = 0.7 + 0.3 * math.sin(frame_n * 0.06 + sx)
+        b = int(b * twinkle)
         surf[sy_s, sx] = (b, b, min(b + 30, 255))
 
-    # Nebula
+    # Nebula glow
     cx = int(GAME_W * 0.5 + math.sin(frame_n * 0.004) * 60)
-    cv2.circle(surf, (cx, 80), 160, (35, 15, 20), -1)
+    cv2.circle(surf, (cx, 80), 160, (30, 12, 25), -1)
 
 
 # ──────────────────────────────────────────────────────────
@@ -701,61 +692,78 @@ def draw_rounded_rect(surf, x1, y1, x2, y2, color, alpha=0.55):
 
 
 def draw_game_hud(surf, score, lives, level, boosting, frame_n, xp_pct=0.0):
-    # Top panel
-    draw_rounded_rect(surf, 0, 0, GAME_W, 58, COL['dark'], 0.7)
-    cv2.line(surf, (0, 58), (GAME_W, 58), COL['accent'], 1)
+    # ── TOP STATUS BAR (RPG window) ──
+    draw_rounded_rect(surf, 0, 0, GAME_W, 62, COL['dark'], 0.75)
+    draw_rpg_border(surf, 2, 2, GAME_W - 2, 60)
 
-    # Hull bar
-    txt(surf, "HULL", 10, 17, 0.35, COL['dimwhite'])
-    hp_w = 120
-    hp_x = 45
-    cv2.rectangle(surf, (hp_x, 8), (hp_x + hp_w, 18), (40, 40, 50), -1)
-    fill_w = int(hp_w * max(0, lives / 3.0))
-    hp_col = COL['hp_full'] if lives > 1 else COL['hp_low']
-    if fill_w > 0:
-        cv2.rectangle(surf, (hp_x, 8), (hp_x + fill_w, 18), hp_col, -1)
-    cv2.rectangle(surf, (hp_x, 8), (hp_x + hp_w, 18), COL['border'], 1)
-    for i in range(1, 3):
-        px = hp_x + i * 40
-        cv2.line(surf, (px, 8), (px, 18), COL['dark'], 2)
+    # HP hearts
+    txt(surf, "HP", 14, 22, 0.42, COL['accent'], bold=True)
+    for i in range(3):
+        hx = 44 + i * 28
+        if i < lives:
+            # Filled heart (red)
+            pts = np.array([
+                [hx, 12], [hx-4, 8], [hx-8, 12], [hx-8, 16],
+                [hx, 24], [hx+8, 16], [hx+8, 12], [hx+4, 8]
+            ], np.int32)
+            cv2.fillPoly(surf, [pts], (60, 60, 255))
+            cv2.polylines(surf, [pts], True, (100, 100, 255), 1, cv2.LINE_AA)
+        else:
+            # Empty heart (outline)
+            pts = np.array([
+                [hx, 12], [hx-4, 8], [hx-8, 12], [hx-8, 16],
+                [hx, 24], [hx+8, 16], [hx+8, 12], [hx+4, 8]
+            ], np.int32)
+            cv2.polylines(surf, [pts], True, (60, 50, 80), 1, cv2.LINE_AA)
 
-    # Score
-    txt(surf, "SCORE", 10, 42, 0.35, COL['accent'])
-    txt(surf, f"{score:06d}", 58, 42, 0.45, COL['white'], bold=True)
+    # Gold / Score
+    txt(surf, "GOLD", 14, 50, 0.38, COL['gold'])
+    # Gold coin icon
+    cv2.circle(surf, (52, 46), 6, COL['accent'], -1)
+    cv2.circle(surf, (52, 46), 6, COL['border'], 1)
+    txt(surf, "$", 49, 49, 0.3, COL['dark'], bold=True)
+    txt(surf, f"{score:,}", 62, 50, 0.48, COL['white'], bold=True)
 
-    # Level badge
-    badge_x = GAME_W // 2 - 35
-    draw_rounded_rect(surf, badge_x, 5, badge_x + 70, 25, COL['panel'], 0.8)
-    cv2.rectangle(surf, (badge_x, 5), (badge_x + 70, 25), COL['accent'], 1)
-    txt(surf, f"LVL {level:02d}", badge_x + 10, 20, 0.45, COL['accent'], bold=True)
+    # Level badge (center)
+    badge_x = GAME_W // 2 - 45
+    draw_rounded_rect(surf, badge_x, 4, badge_x + 90, 36, COL['panel'], 0.85)
+    draw_rpg_border(surf, badge_x, 4, badge_x + 90, 36)
+    txt(surf, f"LV.{level:02d}", badge_x + 14, 26, 0.52, COL['accent'], bold=True)
 
-    # XP bar
-    xp_x, xp_y = badge_x, 32
-    cv2.rectangle(surf, (xp_x, xp_y), (xp_x + 70, xp_y + 4), (40, 40, 50), -1)
-    xp_fill = int(70 * min(xp_pct, 1.0))
+    # EXP bar under level badge
+    xp_x, xp_y = badge_x + 5, 42
+    xp_w = 80
+    cv2.rectangle(surf, (xp_x, xp_y), (xp_x + xp_w, xp_y + 8), (30, 25, 40), -1)
+    xp_fill = int(xp_w * min(xp_pct, 1.0))
     if xp_fill > 0:
-        cv2.rectangle(surf, (xp_x, xp_y), (xp_x + xp_fill, xp_y + 4), COL['xp'], -1)
+        cv2.rectangle(surf, (xp_x, xp_y), (xp_x + xp_fill, xp_y + 8), COL['xp'], -1)
+    cv2.rectangle(surf, (xp_x, xp_y), (xp_x + xp_w, xp_y + 8), COL['rpg_inner'], 1)
+    txt(surf, "EXP", xp_x + xp_w + 6, xp_y + 8, 0.3, COL['xp'])
 
-    # Right-side stats
-    txt(surf, "SYSTEM: ONLINE",  GAME_W - 130, 17, 0.32, COL['dimwhite'])
-    txt(surf, f"SECTOR: {level:02d}", GAME_W - 130, 37, 0.32, COL['dimwhite'])
-    txt(surf, "SHIELD",           GAME_W - 80, 52, 0.3,  COL['dimwhite'])
-    txt(surf, "ACTIVE" if boosting else "STANDBY", GAME_W - 36, 52, 0.3,
-        COL['boost'] if boosting else (100, 100, 100))
+    # Right-side status window
+    sx = GAME_W - 155
+    draw_rounded_rect(surf, sx, 6, GAME_W - 8, 55, COL['panel'], 0.8)
+    draw_rpg_border(surf, sx, 6, GAME_W - 8, 55)
+    txt(surf, "STATUS", sx + 12, 22, 0.35, COL['accent'])
+    txt(surf, f"ZONE  {level:02d}", sx + 12, 38, 0.33, COL['dimwhite'])
+    # Shield status
+    shield_col = COL['boost'] if boosting else (80, 70, 90)
+    cv2.circle(surf, (GAME_W - 28, 38), 8, shield_col, -1)
+    cv2.circle(surf, (GAME_W - 28, 38), 8, COL['rpg_border'], 1)
+    txt(surf, "S", GAME_W - 32, 42, 0.3, COL['white'] if boosting else COL['dimwhite'])
 
-    # Overdrive banner
+    # Overdrive banner (RPG "Limit Break" style)
     if boosting:
         pulse = int(180 + 75 * abs(math.sin(frame_n * 0.25)))
-        draw_rounded_rect(surf, GAME_W//2 - 100, GAME_H - 42,
-                          GAME_W//2 + 100, GAME_H - 6, (10, 10, 15), 0.9)
-        cv2.rectangle(surf, (GAME_W//2 - 100, GAME_H - 42),
-                      (GAME_W//2 + 100, GAME_H - 6), COL['accent'], 1)
-        cv2.line(surf, (GAME_W//2-100, GAME_H-42), (GAME_W//2-85, GAME_H-42), COL['accent'], 2)
-        cv2.line(surf, (GAME_W//2+100, GAME_H-42), (GAME_W//2+85, GAME_H-42), COL['accent'], 2)
-        txt(surf, "OVERDRIVE ENGAGED", GAME_W//2 - 82, GAME_H - 18,
+        bx1, bx2 = GAME_W//2 - 105, GAME_W//2 + 105
+        by1, by2 = GAME_H - 48, GAME_H - 8
+        draw_rounded_rect(surf, bx1, by1, bx2, by2, COL['dark'], 0.9)
+        draw_rpg_border(surf, bx1, by1, bx2, by2)
+        txt(surf, ">> OVERDRIVE ACTIVE <<", GAME_W//2 - 92, GAME_H - 22,
             0.42, (0, pulse, pulse), bold=True)
 
-    cv2.line(surf, (0, GAME_H - 2), (GAME_W, GAME_H - 2), COL['accent'], 1)
+    # Bottom accent line
+    cv2.line(surf, (0, GAME_H - 2), (GAME_W, GAME_H - 2), COL['rpg_border'], 1)
 
 
 def _draw_music_status(surf, music_player, frame_n):
@@ -764,44 +772,40 @@ def _draw_music_status(surf, music_player, frame_n):
     col = (80, 80, 80) if music_player.muted else COL['accent']
     pulse = 0.6 + 0.4 * abs(math.sin(frame_n * 0.08)) if not music_player.muted else 0.5
     note_col = tuple(int(c * pulse) for c in col)
-    label = "[M] MUTE" if not music_player.muted else "[M] UNMUTE"
-    txt(surf, label, 8, GAME_H - 16, 0.28, note_col)
+    label = "[M] Mute" if not music_player.muted else "[M] Unmute"
+    txt(surf, label, 8, GAME_H - 12, 0.32, note_col)
 
 
 def draw_gesture_panel(cam_frame, gesture_cnn, gesture, confidence, frame_n):
     h, w = cam_frame.shape[:2]
     info = gesture_cnn.GESTURES.get(gesture, gesture_cnn.GESTURES['NONE'])
 
-    # Subtle cyber-grid
-    for i in range(1, 4):
-        cv2.line(cam_frame, (0, i * h // 4), (w, i * h // 4), (30, 20, 20), 1)
-        cv2.line(cam_frame, (i * w // 4, 0), (i * w // 4, h),  (30, 20, 20), 1)
-
-    # Bottom panel
-    draw_rounded_rect(cam_frame, 0, h - 85, w, h, COL['dark'], 0.75)
-    cv2.line(cam_frame, (0, h - 85), (w, h - 85), COL['accent'], 1)
+    # Bottom panel — RPG window
+    draw_rounded_rect(cam_frame, 0, h - 90, w, h, COL['dark'], 0.75)
+    draw_rpg_border(cam_frame, 2, h - 88, w - 2, h - 2)
 
     col = tuple(info['color'])
-    txt(cam_frame, "NEURAL LINK:", 10, h - 62, 0.35, COL['dimwhite'])
-    txt(cam_frame, info['label'],  95, h - 62, 0.52, col, bold=True)
-    txt(cam_frame, f"COMMAND: {info['action']}", 10, h - 38, 0.42, COL['accent'])
+    txt(cam_frame, "Gesture:", 10, h - 66, 0.35, COL['dimwhite'])
+    txt(cam_frame, info['label'],  80, h - 66, 0.52, col, bold=True)
+    txt(cam_frame, f"Action: {info['action']}", 10, h - 42, 0.38, COL['accent'])
 
-    # Confidence gauge
-    orb_x, orb_y = w - 55, h - 48
+    # Confidence gauge — circular
+    orb_x, orb_y = w - 50, h - 50
     pct = min(confidence, 1.0)
     cv2.circle(cam_frame, (orb_x, orb_y), 22, (40, 35, 40), 2)
     if pct > 0:
         cv2.ellipse(cam_frame, (orb_x, orb_y), (22, 22), -90, 0, int(360 * pct), col, 3)
     txt(cam_frame, f"{pct*100:.0f}%", orb_x - 16, orb_y + 5, 0.38, COL['white'])
 
-    # Sync bar
-    bar_x, bar_y = 10, h - 18
-    bar_w = w - 95
-    cv2.rectangle(cam_frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + 4), (35, 30, 35), -1)
+    # MP / Sync bar
+    bar_x, bar_y = 10, h - 20
+    bar_w = w - 90
+    cv2.rectangle(cam_frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + 6), (30, 25, 40), -1)
     fill = int(bar_w * pct)
     if fill > 0:
-        cv2.rectangle(cam_frame, (bar_x, bar_y), (bar_x + fill, bar_y + 4), COL['energy'], -1)
-    txt(cam_frame, "SYNC", bar_x + bar_w + 10, bar_y + 6, 0.3, COL['energy'])
+        cv2.rectangle(cam_frame, (bar_x, bar_y), (bar_x + fill, bar_y + 6), COL['energy'], -1)
+    cv2.rectangle(cam_frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + 6), COL['rpg_inner'], 1)
+    txt(cam_frame, "MP", bar_x + bar_w + 8, bar_y + 7, 0.3, COL['energy'])
 
     # Target brackets on detected palm centre
     if gesture_cnn.hand_detected and gesture_cnn.landmarks:
@@ -817,14 +821,13 @@ def draw_gesture_panel(cam_frame, gesture_cnn, gesture, confidence, frame_n):
             cv2.line(cam_frame, (ex, ey), (ex - sx, ey), col, 2)
             cv2.line(cam_frame, (ex, ey), (ex, ey - sy), col, 2)
 
-    # Legend box
+    # Spells legend box — RPG window
     gx, gy = w - 135, 12
-    draw_rounded_rect(cam_frame, gx, gy, gx + 125, gy + 75, COL['dark'], 0.7)
-    cv2.rectangle(cam_frame, (gx, gy), (gx + 125, gy + 75), COL['border'], 1)
-    txt(cam_frame, "OS PROTOCOL",  gx + 10, gy + 18, 0.35, COL['accent'])
-    txt(cam_frame, "FIST: Port",   gx + 8,  gy + 35, 0.3,  (255, 180, 0))
-    txt(cam_frame, "PALM: Stbd",   gx + 8,  gy + 50, 0.3,  (100, 255, 120))
-    txt(cam_frame, "PEACE: Boost", gx + 8,  gy + 65, 0.3,  (0, 150, 255))
+    draw_rounded_rect(cam_frame, gx, gy, gx + 128, gy + 80, COL['dark'], 0.75)
+    draw_rpg_border(cam_frame, gx, gy, gx + 128, gy + 80, "SPELLS")
+    txt(cam_frame, "Fist  -> Left",   gx + 10, gy + 30, 0.32, (255, 180, 0))
+    txt(cam_frame, "Palm  -> Right",  gx + 10, gy + 48, 0.32, (100, 255, 120))
+    txt(cam_frame, "Peace -> Boost",  gx + 10, gy + 66, 0.32, (0, 150, 255))
 
 
 # ──────────────────────────────────────────────────────────
@@ -1004,17 +1007,17 @@ def main():
                             score += pts
                             sfx.play('explode')
                             floats.append(FloatingText(int(a.x) - 15, int(a.y),
-                                                       f"+{pts}", COL['accent'], 0.45))
+                                                       f"+{pts} Gold", COL['accent'], 0.45))
                             if boosting:
                                 floats.append(FloatingText(int(a.x) - 10, int(a.y) - 18,
-                                                           "CRITICAL", COL['crit'], 0.4, 2.0))
+                                                           "CRITICAL!", COL['crit'], 0.4, 2.0))
                             particles.extend(
                                 Particle(a.x, a.y, (255, 150, 50), 1.3) for _ in range(14))
                             if a in asteroids:
                                 asteroids.remove(a)
                         else:
                             floats.append(FloatingText(int(a.x) - 8, int(a.y),
-                                                       "DMG", COL['hit'], 0.35))
+                                                       "HIT", COL['hit'], 0.35))
                         break
 
             # Ship ↔ Asteroid collisions
@@ -1025,7 +1028,7 @@ def main():
                         ship.invincible = 90
                         sfx.play('damage')
                         floats.append(FloatingText(ship.x - 20, ship.y - 30,
-                                                   "WARNING", COL['hit'], 0.55, 2.0))
+                                                   "WARNING!", COL['hit'], 0.55, 2.0))
                         particles.extend(
                             Particle(ship.x, ship.y, (50, 50, 255), 1.5) for _ in range(22))
                         if a in asteroids:
@@ -1042,7 +1045,7 @@ def main():
                     score += 75
                     sfx.play('pickup')
                     floats.append(FloatingText(int(s.x) - 15, int(s.y),
-                                              "+75", COL['accent'], 0.5))
+                                              "+75 Gold", COL['accent'], 0.5))
                     particles.extend(Particle(s.x, s.y, (255, 255, 100)) for _ in range(12))
                     star_picks.remove(s)
 
@@ -1059,7 +1062,7 @@ def main():
                 level = new_level
                 sfx.play('levelup')
                 floats.append(FloatingText(GAME_W // 2 - 60, GAME_H // 2,
-                                           f"SECTOR {level:02d} CLEARED",
+                                           f"Zone {level:02d} Cleared!",
                                            COL['accent'], 0.5, 1.0))
                 particles.extend(
                     Particle(GAME_W // 2, GAME_H // 2, (255, 255, 0), 1.8)
@@ -1082,29 +1085,26 @@ def main():
         _draw_music_status(game, music, frame_n)
 
         if game_over:
-            draw_rounded_rect(game, 60, 130, GAME_W - 60, 370, COL['dark'], 0.85)
-            cv2.rectangle(game, (60, 130), (GAME_W - 60, 370), COL['hit'], 1)
-            for x, y in [(60, 130), (GAME_W-60, 130), (60, 370), (GAME_W-60, 370)]:
-                dx = 15 if x == 60 else -15
-                dy = 15 if y == 130 else -15
-                cv2.line(game, (x, y), (x+dx, y), COL['hit'], 2)
-                cv2.line(game, (x, y), (x, y+dy), COL['hit'], 2)
-            txt(game, "MISSION FAILED",        GAME_W//2 - 105, 180, 0.72, COL['hit'],     bold=True)
-            cv2.line(game, (90, 190), (GAME_W - 90, 190), COL['hit'], 1)
-            txt(game, "FINAL SCORE",           GAME_W//2 - 58,  230, 0.40, COL['dimwhite'])
-            txt(game, f"{score:06d}",          GAME_W//2 - 45,  255, 0.65, COL['white'],   bold=True)
-            txt(game, "MAX SECTOR",            GAME_W//2 - 52,  285, 0.40, COL['dimwhite'])
-            txt(game, f"SECTOR {level:02d}",   GAME_W//2 - 48,  310, 0.55, COL['accent'],  bold=True)
-            cv2.line(game, (90, 330), (GAME_W - 90, 330), COL['border'], 1)
-            txt(game, "[R] RESTART    [Q] ABORT", GAME_W//2 - 100, 355, 0.40, COL['accent'])
+            # RPG-style Game Over window
+            gx1, gy1 = 120, 130
+            gx2, gy2 = GAME_W - 120, 370
+            draw_rounded_rect(game, gx1, gy1, gx2, gy2, COL['dark'], 0.88)
+            draw_rpg_border(game, gx1, gy1, gx2, gy2, "GAME OVER")
+            txt(game, "You have fallen...",    GAME_W//2 - 78, 180, 0.45, COL['hit'])
+            cv2.line(game, (gx1+15, 195), (gx2-15, 195), COL['rpg_inner'], 1)
+            txt(game, "Gold Earned",           GAME_W//2 - 52, 225, 0.40, COL['dimwhite'])
+            txt(game, f"{score:,}",            GAME_W//2 - 35, 252, 0.65, COL['gold'],    bold=True)
+            txt(game, "Zone Reached",          GAME_W//2 - 55, 280, 0.40, COL['dimwhite'])
+            txt(game, f"Zone {level:02d}",     GAME_W//2 - 32, 307, 0.55, COL['accent'],  bold=True)
+            cv2.line(game, (gx1+15, 325), (gx2-15, 325), COL['rpg_inner'], 1)
+            txt(game, "[R] Retry   [Q] Quit",  GAME_W//2 - 82, 352, 0.40, COL['accent'])
 
         # Composite camera + game into pre-allocated combined buffer
         cv2.resize(cam_bgr, (CAM_W, CAM_H), dst=cam_view)
         draw_gesture_panel(cam_view, cnn, gesture, confidence, frame_n)
         np.copyto(game_view, game)
 
-        # OPT 6 & 7 – use pre-computed scanline rows and vignette mask
-        combined[_scanline_rows] = (combined[_scanline_rows] * 0.85).astype(np.uint8)
+        # Post-processing: vignette
         combined[:] = (combined * _vignette_mask_3d).astype(np.uint8)
 
         cv2.imshow(WIN_NAME, combined)
