@@ -12,29 +12,6 @@
 ║   🖐 OPEN PALM  →  Move RIGHT                           ║
 ║   ✌ PEACE/V     →  OVERDRIVE (speed up + shoot fast)    ║
 ╚══════════════════════════════════════════════════════════╝
-
-FIXES APPLIED:
-  1. BUG  – Asteroid.update() used undefined name 'GW'; corrected to 'GAME_W'.
-  2. BUG  – Wrong MediaPipe import paths for draw_landmarks / HandLandmarksConnections;
-             replaced with the correct mediapipe.solutions.hands drawing helpers.
-  3. BUG  – Type-hint 'np.ndarray | None' requires Python 3.10+; changed to
-             'Optional[np.ndarray]' so the code runs on Python 3.8/3.9 as well.
-  4. BUG  – Level-up logic: 'prev_level = level' was re-assigned every frame
-             *before* the threshold check, so the level-up SFX / particles fired
-             continuously once the score exceeded the threshold.  Fixed by tracking
-             the level from the *previous* frame correctly.
-
-OPTIMISATIONS APPLIED:
-  5. PERF – All '[list.append(…) for _ in range(n)]' anti-patterns (builds a
-             throw-away list on the heap) replaced with
-             'list.extend(… for _ in range(n))' – avoids the temporary list alloc.
-  6. PERF – Vignette mask pre-computed once at startup; was rebuilt every frame.
-  7. PERF – Scanline index array pre-computed once at startup; was rebuilt every frame.
-  8. PERF – Removed redundant per-frame np.empty_like allocation in _get_overlay
-             (helper was unused; draw_rounded_rect already uses a local sub-view).
-  9. PERF – cap for dead particles raised to 100 (was 80) but slicing now avoids
-             a full list copy: use a deque with maxlen instead for O(1) appends.
- 10. CLEAN – Removed the now-unused _get_overlay() helper function.
 """
 
 import os
